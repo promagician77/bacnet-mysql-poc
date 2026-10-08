@@ -1,0 +1,1 @@
+{ "name": "bacnet-mysql-poc", "version": "0.1.0", "private": true, "scripts": { "start": "npx --yes serve . -l 3000", "deploy": "npx --yes vercel --prod" } }

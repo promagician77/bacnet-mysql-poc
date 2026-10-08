@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="robots" content="noindex, nofollow">
+<title>BACnet to MySQL — phase 1 notes</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='10' fill='%2327404F'/><g stroke='%23FFF' stroke-width='4' fill='none' stroke-linecap='round'><path d='M14 44V30M26 44V20M38 44V34M50 44V24'/></g></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-palette="#D03B3B,#C6CCD2">
+<header>
+  <div class="bar">
+    <div><h1>Getting a site into MySQL, and keeping it there</h1>
+      <p class="sub">Phase-1 working notes on your YABE proof of concept</p></div>
+    <dl class="facts">
+      <div><dt>Simulated points</dt><dd id="f-points">&mdash;</dd></div>
+      <div><dt>COV only</dt><dd id="f-cov" class="bad">&mdash;</dd></div>
+      <div><dt>COV + poll</dt><dd id="f-both" class="good">&mdash;</dd></div>
+    </dl>
+  </div>
+  <nav role="tablist">
+    <button role="tab" aria-selected="true" data-tab="gap">The gap</button>
+    <button role="tab" aria-selected="false" data-tab="arch">Architecture</button>
+    <button role="tab" aria-selected="false" data-tab="db">The database</button>
+    <button role="tab" aria-selected="false" data-tab="notes">Notes</button>
+  </nav>
+</header>
+
+<main>
+<!-- ================= GAP ================= -->
+<section id="gap" class="panel">
+  <p class="lede">&ldquo;Store what YABE gathers&rdquo; means, in practice, logging COV notifications. That works until you ask the database a question it cannot answer: when a point has said nothing for six hours, is it steady, or is it gone? I simulated a 24-hour site to find out how much of a day that costs you.</p>
+
+  <div class="verdicts">
+    <article class="v bad">
+      <header><span class="tag">Method A</span><span class="stamp">75.97%</span></header>
+      <h2>COV subscriptions only</h2>
+      <dl>
+        <div><dt>Point-minutes with no data</dt><dd id="a-dark">&mdash;</dd></div>
+        <div><dt>Longest single gap</dt><dd id="a-gap">&mdash;</dd></div>
+        <div><dt>Points that went dark</dt><dd id="a-pts">&mdash;</dd></div>
+      </dl>
+    </article>
+    <article class="v good">
+      <header><span class="tag">Method B</span><span class="stamp">99.65%</span></header>
+      <h2>COV plus a 10-minute reconciliation poll</h2>
+      <dl>
+        <div><dt>Point-minutes with no data</dt><dd id="b-dark">&mdash;</dd></div>
+        <div><dt>Longest single gap</dt><dd id="b-gap">&mdash;</dd></div>
+        <div><dt>Points that went dark</dt><dd id="b-pts">&mdash;</dd></div>
+      </dl>
+    </article>
+  </div>
+
+  <p class="punch" id="punch">&mdash;</p>
+
+  <figure class="viz-root chartwrap">
+    <figcaption><b>Coverage across the simulated day, one row per point.</b>
+      Each cell is ten minutes. Red means more than fifteen minutes passed with nothing stored for that point.</figcaption>
+    <div class="legend">
+      <span><i class="sw gapc"></i>no data for &gt;15 min</span>
+      <span><i class="sw okc"></i>covered</span>
+      <span class="sel" role="group" aria-label="Collection method">
+        <button data-m="cov" aria-pressed="true">COV only</button><button data-m="both" aria-pressed="false">COV + poll</button>
+      </span>
+    </div>
+    <div id="strip"></div>
+    <details class="tbl"><summary>View as a table</summary><div id="striptable"></div></details>
+  </figure>
+
+  <h3>The point that makes the case</h3>
+  <div class="spot" id="spot">&mdash;</div>
+
+  <aside class="caveat">
+    <h4>What is simulated and what is real</h4>
+    <p><b>Simulated:</b> the site. Thirty-two points across six devices, driven for a day, with plant that shuts down overnight so outputs genuinely park and hold &mdash; which is the behaviour that makes COV silence ambiguous in the first place.</p>
+    <p><b>Taken from your README, not invented:</b> subscriptions lapse unless something renews them (&sect;2.6.2, 120&nbsp;s default), and notifications go out unconfirmed by default, so a lost one is lost quietly (&sect;2.6.3). The run dropped <span id="c-drop">&mdash;</span> notifications and saw <span id="c-lapse">&mdash;</span> lapsed subscriptions.</p>
+    <p><b>Worth noticing:</b> Method B is not perfect either, and it should not be. The <span id="c-resid">&mdash;</span> point-minutes it still misses are one device that actually went off the network for 44 minutes. That is a real fault, and the right behaviour is to raise it, not to paper over it.</p>
+  </aside>
+</section>
+
+<!-- ================= ARCHITECTURE ================= -->
+<section id="arch" class="panel" hidden>
+  <p class="lede">Two decisions shape everything after them: what runs at the customer site, and which direction the connection opens. Both are easier to get right now than to change once a site is live.</p>
+
+  <h3>YABE is the wrong tool for the 24/7 half of the job</h3>
+  <p class="note">Not a criticism of it &mdash; it is a graphical Windows program for exploring and navigating devices (&sect;1.1), and it is very good at that. But an interactive desktop application needs a logged-in session. It stops at a log-off, at a Windows Update reboot, at a locked workstation whose user went home. Nothing restarts it, nothing renews the subscriptions it was holding, and nothing tells you. Its own README notes the project is unsupported (&sect;5), which is a thin place to put a customer-facing data feed.</p>
+  <p class="note">The split I would propose keeps YABE exactly where it earns its keep:</p>
+  <div class="two">
+    <article class="card"><h4>YABE, for discovery and commissioning</h4><p>Walk the site, find the devices, read the address space, confirm which objects are worth trending and what they are really called. Export that object list once. This is interactive work a person should be doing, and YABE is genuinely good at it.</p></article>
+    <article class="card hl"><h4>A headless collector, for the continuous job</h4><p>A Windows Service or a small Linux container running the same C# BACnet stack YABE is built on. It starts on boot, renews its own subscriptions, polls on a schedule, reconnects, and reports a heartbeat. No desktop, no logged-in user, no GUI to crash.</p></article>
+  </div>
+
+  <h3>Nothing BACnet should face the internet</h3>
+  <p class="note">Your post mentions reaching the customer site over the internet. Worth being direct about this: BACnet/IP in its classic form has no authentication and no encryption. Anything that can reach UDP 47808 can discover devices, read them, and write to them &mdash; and writing to a building controller is a physical-world action. Exposed BACnet devices are routinely catalogued by internet-wide scanners.</p>
+  <p class="note">The fix is also the easier sell. Put the collector inside the site and have it open the connection outward:</p>
+  <figure class="graph">
+    <svg viewBox="0 0 960 300" role="img" aria-label="Collector at the customer site opening an outbound connection to a cloud database, with no inbound ports">
+      <rect class="zone" x="16" y="30" width="470" height="240" rx="5"/>
+      <text class="zlab" x="32" y="52">CUSTOMER SITE &middot; no inbound ports opened</text>
+      <rect class="zone cloud" x="610" y="30" width="334" height="240" rx="5"/>
+      <text class="zlab" x="626" y="52">YOUR INFRASTRUCTURE</text>
+
+      <g class="n"><rect x="40" y="76" width="130" height="46" rx="3"/><text x="105" y="96">AHU / chillers</text><text class="s" x="105" y="113">BACnet/IP</text></g>
+      <g class="n"><rect x="40" y="136" width="130" height="46" rx="3"/><text x="105" y="156">VAV boxes</text><text class="s" x="105" y="173">MSTP via router</text></g>
+      <g class="n"><rect x="40" y="196" width="130" height="46" rx="3"/><text x="105" y="216">Meters</text><text class="s" x="105" y="233">BACnet/IP</text></g>
+
+      <g class="n keep"><rect x="250" y="120" width="190" height="78" rx="3"/><text x="345" y="146">Collector</text><text class="s" x="345" y="165">COV + reconciliation poll</text><text class="s" x="345" y="182">buffers when offline</text></g>
+      <line class="e" x1="170" y1="99" x2="246" y2="140" marker-end="url(#a)"/>
+      <line class="e" x1="170" y1="159" x2="246" y2="159" marker-end="url(#a)"/>
+      <line class="e" x1="170" y1="219" x2="246" y2="178" marker-end="url(#a)"/>
+
+      <g class="n keep"><rect x="700" y="100" width="160" height="50" rx="3"/><text x="780" y="121">MySQL</text><text class="s" x="780" y="139">readings + heartbeat</text></g>
+      <g class="n"><rect x="700" y="176" width="160" height="50" rx="3"/><text x="780" y="197">Watchdog</text><text class="s" x="780" y="215">alerts on silence</text></g>
+
+      <path class="g" d="M440 150 L700 125" marker-end="url(#ag)"/>
+      <text class="cap big" x="572" y="131">outbound TLS only</text>
+      <text class="cap" x="572" y="150">443, initiated from the site</text>
+      <path class="blocked" d="M700 200 L448 176"/>
+      <text class="cap no" x="572" y="212">no inbound path exists</text>
+      <defs>
+        <marker id="a" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0 0L8 3L0 6" fill="#6B747C"/></marker>
+        <marker id="ag" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0 0L9 3.5L0 7" fill="#1C6B4B"/></marker>
+      </defs>
+    </svg>
+  </figure>
+  <div class="two">
+    <article class="card"><h4>Why the customer's IT will agree to it</h4><p>No port forwarding, no inbound firewall rule, no VPN to maintain, no BACnet reachable from outside. It is the same shape as any monitoring agent they already run, which is a conversation their security people have had before.</p></article>
+    <article class="card"><h4>What it buys you operationally</h4><p>A collector that buffers locally through a WAN outage and backfills on reconnect, so a flaky site link costs you latency instead of data. And a heartbeat row, so &ldquo;we are receiving nothing&rdquo; is a detectable state rather than a quiet one.</p></article>
+  </div>
+</section>
+
+<!-- ================= DATABASE ================= -->
+<section id="db" class="panel" hidden>
+  <p class="lede">The schema is small. Three choices in it are worth making deliberately, because each is painful to retrofit after a site has been logging for six months.</p>
+  <div class="three">
+    <article class="card"><h4>Keep the status flags</h4><p>BACnet hands you <span class="m">present_value</span> with <span class="m">statusFlags</span> beside it. A reading taken while a point is overridden or out of service is not plant data. Drop the flags at write time and you can never separate the two again &mdash; the number looks perfectly ordinary.</p></article>
+    <article class="card"><h4>Record how each value arrived</h4><p>A COV notification and a polled read are not equally trustworthy. When a trend looks wrong, the first useful question is which path produced it, and that is only answerable if you wrote it down.</p></article>
+    <article class="card"><h4>Cluster on (object_id, read_at)</h4><p>InnoDB stores rows in primary-key order, so one point's history sits physically together and a trend query is a range scan. An <span class="m">AUTO_INCREMENT</span> id with a secondary index scatters the same rows across the table.</p></article>
+  </div>
+
+  <h3>What it costs to store</h3>
+  <p class="note">For a 500-point site, polling every ten minutes with COV on top:</p>
+  <div class="sizing" id="sizing"></div>
+  <p class="small">Roughly 59 million rows and under 4&nbsp;GB a year, which plain MySQL handles comfortably with the partitioning in the schema. Monthly partitions also mean ageing data out is a DDL operation rather than a <span class="m">DELETE</span> that has to walk the table.</p>
+
+  <h3>The schema</h3>
+  <pre id="sqlbox"><code>Loading&hellip;</code></pre>
+  <p><a class="dl" href="files/schema.sql" download>Download schema.sql</a></p>
+</section>
+
+<!-- ================= NOTES ================= -->
+<section id="notes" class="panel" hidden>
+  <div class="prose">
+    <h3>What I would need to know before quoting the real thing</h3>
+    <ul>
+      <li><strong>BACnet/IP or MSTP, and how much of each?</strong> This is the single biggest driver. An MSTP trunk at 38.4&nbsp;kbaud has a very small polling budget, and the point count it can sustain is nothing like an IP segment's. If there is MSTP behind a router, the reconciliation poll has to be planned around it with <span class="m">ReadPropertyMultiple</span> rather than point-by-point reads.</li>
+      <li><strong>How many points, and who decides which?</strong> Discovery usually finds ten times what anyone wants trended. Narrowing that list is an engineering judgement you are far better placed to make than I am.</li>
+      <li><strong>What does the site's internet connection look like?</strong> It decides how much local buffering the collector needs, not whether the design works.</li>
+      <li><strong>Is anything on the site already trending?</strong> Many controllers hold their own TrendLog objects, and reading those back gives you history from before the collector existed instead of starting from zero.</li>
+      <li><strong>Read-only, now and later?</strong> Phase 1 reads. If a later phase ever writes to a controller, the safety and liability conversation is a different one and should happen before the architecture assumes it.</li>
+    </ul>
+
+    <h3>How I would want to work</h3>
+    <p>You know the buildings and the protocol; I do not, and I would rather not pretend otherwise. What I am useful for is the part that has to run unattended for years without anyone noticing it has stopped. That means I will ask you a lot of questions about how plant actually behaves, and you should expect me to push back when something would look fine in a demo and fail quietly on a live site.</p>
+    <p>For the proof of concept I would want one real site, a small point list you have chosen, and a target of two weeks to a collector that has run unattended through a weekend &mdash; including at least one deliberate reboot, because that is the test that matters.</p>
+
+    <h3>About these numbers</h3>
+    <p>The site is simulated; I have not touched your customer's equipment. What is drawn from your README rather than from me: the 120-second subscription lifetime, the unconfirmed-by-default notifications, and that YABE is a graphical Windows program rather than a service. The measurement method, the schema and the row arithmetic are real and would run the same way against a live site.</p>
+    <p class="sig">Happy to walk through any of it, or to point the same measurement at a real site once there is one to point it at.</p>
+  </div>
+</section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
